@@ -11,6 +11,7 @@ The scripts in this rep show how Google Earth Engine and R were to evaluate grou
  ## Getting Started
  ### Google Earth Engine
  
+ Supervised Classifications https://developers.google.com/earth-engine/guides/classification
  
  ## Set Boundaries
  Import select vegetation shapefiles from NC dataset (https://gis.water.ca.gov/app/NCDatasetViewer/)//
@@ -38,7 +39,11 @@ The scripts in this rep show how Google Earth Engine and R were to evaluate grou
  ```
  ## Supervised Classification
 
-Create a cloud-free, composite image of the growing season (April - September) by removing images with clouds and taking the median value of each pixel.
+A supervised classification was performed to refine the vegetation polygons and identify pixels dominated by tree crowns versus bare ground.  Classifying tree crowns in Sentinel-2 imagery provides three main benefits: 1) eliminates the likelihood that dead trees from the 2012-2016 drought are included in the analyses; 2) removes the adverse impacts of soil reflectance on NDVI (11) given the range of landscapes of the study vegetation types used in this study across California (e.g., deserts, coastal wetlands, agricultural land, urban) and relative differences in vegetation density across hydrological regions; and 3) can minimize NDVI inflation by selecting pixels dominated with vegetation crown in case deeper groundwater levels have caused opportunistic invasive species (e.g., Arundo donax, Tamarix spp.) to outcompete native vegetation under degraded ecosystem conditions (12–14).
+
+
+The supervised classification was performed on a cloud-free, composite image of the 2018 growing season (April - September) by removing images with clouds and taking the median values of each pixel. 
+
   ```<javascript>
  function maskS2clouds(image) {
    var qa = image.select('QA60');
@@ -62,9 +67,31 @@ Create a cloud-free, composite image of the growing season (April - September) b
 
  var image = S2.median();
  ````
- Create a FeatureCollection of hand-selected points 
+ A training dataset for the supervised classification was manually created in Google Earth Engine by hand-selecting tree and bare ground points.  Points were selected using a visual intepretation of the high-resultution satellite baselayer images (typically containing images from 2020). Here is an example of how crown (dark blue) and bare ground (yellow) points were selected within a cottonwood-dominated vegetation polygon (light blue).
 
-Within each vegetation polygon for a given vegetation type, tree crown and bare ground points were hand-selected.
+ ![SelectingPoints](https://github.com/melrohde/CA_RiparianGDE/blob/main/images/SelectingPoints.png)
+
+
+Within each vegetation polygon for a given vegetation type (i.e., cottonwood, willow, valley oak), tree crown and bare ground points were hand-selected. This resulted in 1200 training points across California.
+
+![TrainingPoints](https://github.com/melrohde/CA_RiparianGDE/blob/main/images/TrainingPoints.png)
+
+
+When selecting training points, I tried to evenly select them across hydrologic regions and since soil reflectance and canopy density varied for each vegetation type across the state.
+
+![TrainingPointTable](https://github.com/melrohde/CA_RiparianGDE/blob/main/images/TrainingPointTable.png)
+
+I exported the training points as an asset, and now they are publicly available.
+
+  ```<javascript>
+var AllPoints = ee.FeatureCollection('users/melrohde/Public/TrainingPoints_RiparianVeg');
+
+````
+For each vegetation type, the training points were subdivided into a: (1) training set (~70% of the points) to assess the accuracy of the CART classifier, and (2) test set (~30% of the points) to validate the accuracy of the supervised classification.  
+
+
+
+The training points selected within each vegetation type were used to train a Classification and Regression Trees (CART) classifier (15).  The classifier was then used to classify a composite Sentinel-2 satellite image (median of April 1 - Sept 30, 2018) using Bands 2 (blue  - 490 nm), 3 (green - 560 nm), 4 (red - 665 nm), 8 (NIR - 842 nm), 11 (SWIR - 1610 nm), and 12 (SWIR - 2190 nm). The accuracy of the CART classifier was >97%  (Table S13) and the validation accuracy for the supervised classification with the test set was >90% (Table S14).
 
 
  //-----Identify parameters for supervised classification-----//
