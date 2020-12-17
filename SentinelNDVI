@@ -1,0 +1,505 @@
+////////////////////////////////////////////////////////////////////////////////////
+//  Set Boundaries //
+///////////////////////////////////////////////////////////////////////////////////
+
+//Import vegetation shapefiles from NC dataset (https://gis.water.ca.gov/app/NCDatasetViewer/)//
+var Cottonwood = ee.FeatureCollection('users/melrohde/Public/FremontCottonwood_NCdataset');
+var Willow = ee.FeatureCollection('users/melrohde/Public/GoodingiiWillow_NCdataset');
+var ValleyOak = ee.FeatureCollection('users/melrohde/Public/ValleyOak_NCdataset');
+var veg = Cottonwood.merge(Willow).merge(ValleyOak);
+
+//Import
+var California = ee.FeatureCollection("TIGER/2016/States") .filter(ee.Filter.eq('NAME', 'California'));
+
+
+// Display all polygons of the shapefile table (polygons)
+  //Map.addLayer(LiveOak, {color: '93c669'}, 'LiveOak');
+  Map.addLayer(Cottonwood, {color: '81e9f4'}, 'Cottonwood');
+  //Map.addLayer(Willow, {color: '0000FF'}, 'Willow');
+  //Map.addLayer(ValleyOak, {color: 'fcb102'}, 'ValleyOak');
+  //Map.addLayer(HR,{color:'F9FB7C'},'Hydrologic Regions');
+  Map.addLayer(veg,{color: '93c669'}, 'Veg' )
+
+
+//Import Selected Well locations
+var casgem = ee.FeatureCollection('users/melrohde/CASGEM_SelectLocations');
+print(casgem,'casgem');
+//Map.addLayer(casgem,{palette:['black']},'casgem');
+
+
+//--------------SET SCALE-----------------------------//
+var scale_NDVI = 10;
+
+//---------------SET DATE RANGE-----------------------//
+var startDate = ee.Date.fromYMD(2015,6,23);
+var endDate = ee.Date.fromYMD(2019,9,30);
+
+//---------------SET CLOUD COVERAGE PERCENTAGE--------//
+//var cloudFrequency = 0.7; //(from 0 to 1)
+
+//---------------SET IMAGE COLLECTION FLAGS------------//
+//var S2Flag = 1; //To search in Sentinel-2 Collection --> 1
+
+//--------------SET LAYER VISUALIZATION FLAGS-------------//
+//var showS2col = 0; //To show Sentinel-2 Collections in Map as one image --> 1
+//var showS2colAll = 0; //To show Sentinel-2 Collections in Map all images --> 1
+//var showTable= 1; //To show table shapefile in Map --> 1
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////
+//   Supervised Classification    //
+////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+// Input imagery is a cloud-free Sentinel-2 composite //
+// Map the function over growing season (spring & summer) and take the median.
+
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+
+  // Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+  // Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  return image.updateMask(mask).divide(10000);
+}
+
+var S2 = ee.ImageCollection('COPERNICUS/S2')
+                  .filterDate('2018-04-01', '2018-06-30')
+                  // Pre-filter to get less cloudy granules.
+                  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+                  .map(maskS2clouds)
+
+var image = S2.median();
+
+
+//---------Make a FeatureCollection from the hand-selected points -----------//
+var CottonwoodPoints = ee.FeatureCollection([
+  ee.Feature(CottonwoodBG, {'class': 0}),
+  ee.Feature(CottonwoodCrown, {'class': 1}),
+]);
+
+var WillowPoints = ee.FeatureCollection([
+  ee.Feature(WillowBG, {'class': 0}),
+  ee.Feature(WillowCrown, {'class': 1}),
+]);
+
+var ValleyOakPoints = ee.FeatureCollection([
+  ee.Feature(ValleyOakBG, {'class': 0}),
+  ee.Feature(ValleyOakCrown, {'class': 1}),
+]);
+
+var LiveOakPoints = ee.FeatureCollection([
+  ee.Feature(LiveOakBG, {'class': 0}),
+  ee.Feature(LiveOakCrown, {'class': 1}),
+]);
+
+var AllPoints = ee.FeatureCollection([
+  ee.Feature(CottonwoodBG, {'class': 0}),
+  ee.Feature(CottonwoodCrown, {'class': 1}),
+  ee.Feature(WillowBG, {'class': 0}),
+  ee.Feature(WillowCrown, {'class': 1}),
+  ee.Feature(LiveOakBG, {'class': 0}),
+  ee.Feature(LiveOakCrown, {'class': 1}),
+  ee.Feature(ValleyOakBG, {'class': 0}),
+  ee.Feature(ValleyOakCrown, {'class': 1}),
+  ])
+print(AllPoints.limit(10),"AllPoints")
+
+Export.table.toAsset({
+  collection: AllPoints,
+  description:'TrainingPoints',
+  assetId: 'TrainingPoints',
+});
+
+Export.table.toAsset({
+  collection: CottonwoodPoints,
+  description:'CottonwoodPoints',
+  assetId: 'CottonwoodPoints',
+});
+
+Export.table.toAsset({
+  collection: WillowPoints,
+  description:'WillowPoints',
+  assetId: 'WillowPoints',
+});
+
+Export.table.toAsset({
+  collection: ValleyOakPoints,
+  description:'ValleyOakPoints',
+  assetId: 'ValleyOakPoints',
+});
+
+
+//-----Identify parameters for supervised classification-----//
+
+// For prediction, use these bands (blue, green, red, NIR, SWIR)
+var bands = ['B2','B3','B4','B8','B11','B12']
+
+// This property of the table stores the land cover labels.
+var label = 'class';
+
+
+//-------Subdivide training dataset into training and test points ----//
+//Roughly 70% training, 30% testing
+var split = 0.7;
+
+
+
+//Create a function to extract all reflectance info from training points plotted
+var Training_IC = function(image,featureCollection){
+  return image.select(bands).sampleRegions({
+    // Get the sample from the polygons FeatureCollection.
+    collection: featureCollection,
+    // Keep this list of properties from the polygons.
+    properties: [label],
+    // Set the scale to get Sentinel pixels in the polygons.
+    scale:10
+  })
+};
+
+//Map the function over the image collection with the training points ('Training')
+//to get training data.  This returns class points with properties and band reflectance data.
+
+var CottonwoodSet = Training_IC(image,CottonwoodPoints);
+
+var WillowSet = Training_IC(image,WillowPoints);
+
+var ValleyOakSet = Training_IC(image,ValleyOakPoints);
+
+
+//The RandomColumn() method will add a column of uniform random
+//numbers in a column names 'random' by default
+var CottonwoodSample = CottonwoodSet.randomColumn();
+
+var WillowSample = WillowSet.randomColumn();
+
+var ValleyOakSample = ValleyOakSet.randomColumn();
+
+
+
+// Reserve Data for testing and validation.
+var CottonwoodTraining = CottonwoodSample.filter(ee.Filter.lt('random', split));
+var CottonwoodValidation = CottonwoodSample.filter(ee.Filter.gt('random', split));
+
+var WillowTraining = WillowSample.filter(ee.Filter.lt('random', split));
+var WillowValidation = WillowSample.filter(ee.Filter.gt('random', split));
+
+var ValleyOakTraining = ValleyOakSample.filter(ee.Filter.lt('random', split));
+var ValleyOakValidation = ValleyOakSample.filter(ee.Filter.gt('random', split));
+
+
+
+
+
+
+//----------Train the classifier------------//
+var CottonwoodCARTtrained = ee.Classifier.cart().train(CottonwoodTraining, label, bands);
+var WillowCARTtrained = ee.Classifier.cart().train(WillowTraining, label, bands);
+var ValleyOakCARTtrained = ee.Classifier.cart().train(ValleyOakTraining, label, bands);
+
+//-----------Classify the image------------//
+var CottonwoodCARTclassified = image.select(bands).classify(CottonwoodCARTtrained);
+var WillowCARTclassified = image.select(bands).classify(WillowCARTtrained);
+var ValleyOakCARTclassified = image.select(bands).classify(ValleyOakCARTtrained);
+
+
+//-------Clip classified image to featurecollection -----------//
+var Cottonwood_CART = CottonwoodCARTclassified.clip(Cottonwood);
+var Willow_CART = WillowCARTclassified.clip(Willow);
+var ValleyOak_CART = ValleyOakCARTclassified.clip(ValleyOak);
+
+
+//-------Create a mask for vegetation crown class-------//
+var CottonwoodRaster_mask = Cottonwood_CART.eq(1);
+var WillowRaster_mask = Willow_CART.eq(1);
+var ValleyOakRaster_mask = ValleyOak_CART.eq(1);
+
+//------Clip out portions of the original vegetation polygon -------//
+//------that have been classified as having bare soil ------//
+var CottonwoodClassified = Cottonwood_CART.updateMask(CottonwoodRaster_mask);
+var WillowClassified = Willow_CART.updateMask(WillowRaster_mask);
+var ValleyOakClassified = ValleyOak_CART.updateMask(ValleyOakRaster_mask);
+
+print(CottonwoodClassified,'CottonwoodClassified');
+Map.addLayer(CottonwoodClassified,{palette:['green']},'CottonwoodClassified');
+
+print(WillowClassified,'WillowClassified');
+Map.addLayer(WillowClassified,{palette:['green']},'WillowClassified');
+
+print(ValleyOakClassified,'ValleyOakClassified');
+Map.addLayer(ValleyOakClassified,{palette:['green']},'ValleyOakClassified');
+
+
+
+//---------Accuracy Test with Confusion Matrix--------//
+// Get a confusion matrix representing resubstitution accuracy.
+// describes how well the classifier was able to correctly label resubstituted training data
+//i.e., data the classifier had already seen.
+var CottonwoodTrainAccuracy = CottonwoodCARTtrained.confusionMatrix();
+//print('Cottonwood Resubstitution Confusion matrix: ', CottonwoodTrainAccuracy);
+//print('Cottonwood Training overall accuracy: ', CottonwoodTrainAccuracy.accuracy());
+
+var WillowTrainAccuracy = WillowCARTtrained.confusionMatrix();
+//print('Willow Resubstitution Confusion matrix: ', WillowTrainAccuracy);
+//print('Willow Training overall accuracy: ', WillowTrainAccuracy.accuracy());
+
+var ValleyOakTrainAccuracy = ValleyOakCARTtrained.confusionMatrix();
+//print('Valley Oak Resubstitution Confusion matrix: ', ValleyOakTrainAccuracy);
+//print('Valley Oak Training overall accuracy: ', ValleyOakTrainAccuracy.accuracy());
+
+
+//Classify the validation data
+var CottonwoodValidated = CottonwoodValidation.classify(CottonwoodCARTtrained);
+//print(CottonwoodValidated,'Cottonwood Validated')
+
+var WillowValidated = WillowValidation.classify(WillowCARTtrained);
+//print(WillowValidated, 'Willow Validated');
+
+var ValleyOakValidated = ValleyOakValidation.classify(ValleyOakCARTtrained);
+//print(ValleyOakValidated, 'Valley Oak Validated');
+
+
+// Get a confusion matrix representing expected accuracy.
+var CottonwoodTestAccuracy = CottonwoodValidated.errorMatrix('class', 'classification');
+//print('Cottonwood Validation error matrix: ', CottonwoodTestAccuracy);
+//print('Cottonwood Validation overall accuracy: ', CottonwoodTestAccuracy.accuracy());
+
+var WillowTestAccuracy = WillowValidated.errorMatrix('class', 'classification');
+//print('Willow Validation error matrix: ', WillowTestAccuracy);
+//print('Willow Validation overall accuracy: ', WillowTestAccuracy.accuracy());
+
+var ValleyOakTestAccuracy = ValleyOakValidated.errorMatrix('class', 'classification');
+//print('Valley Oak Validation error matrix: ', ValleyOakTestAccuracy);
+//print('Valley Oak Validation overall accuracy: ', ValleyOakTestAccuracy.accuracy());
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////
+// SENTINEL-2 IMAGE DATA RETRIEVAL //
+////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//-------- FUNCTIONS ------//
+
+///////////////////////////////
+//    Add Date to images     //
+///////////////////////////////
+
+//Function to add date
+var addDate = function(image){
+   var date = image.date().format('YYYYMMdd');
+   return image.set('date', ee.Number.parse(date));
+};
+
+
+
+///////////////////////////////
+//      Cloud Masking        //
+///////////////////////////////
+
+// Function to mask clouds using the Sentinel-2 QA band.
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+
+ //Bits 10 and 11 are clouds and cirrus, respectively.
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+
+ //Both flags should be set to zero, indicating clear conditions.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0).and(
+           qa.bitwiseAnd(cirrusBitMask).eq(0));
+
+  // Return the masked and scaled data, without the QA bands.
+     return image.updateMask(mask).divide(10000)
+     .select("B.*")
+     .copyProperties(image, ["system:time_start"])
+}
+
+
+/////////////////////////////////////
+//      Bare Ground Masking        //
+/////////////////////////////////////
+
+//Function to mask bare ground in vegetation polygons after supervised classification
+function maskBGcottonwood (image){
+  var mask = Cottonwood_CART.eq(1)
+  return image.updateMask(mask)
+}
+
+function maskBGwillow (image){
+  var mask = Willow_CART.eq(1)
+  return image.updateMask(mask)
+}
+
+function maskBGvalleyoak (image){
+  var mask = ValleyOak_CART.eq(1)
+  return image.updateMask(mask)
+}
+
+//function maskBGliveoak (image){
+  //var mask = LiveOak_CART.eq(1)
+  //return image.updateMask(mask)
+//}
+
+///////////////////////////////
+// Derive Vegetation Index //
+///////////////////////////////
+
+// NDVI //
+// This function derives NDVI from a S2 image, and adds it to the image stack.
+function addNDVI(image) {
+    return image
+          .addBands(image.normalizedDifference(['B8', 'B4'])
+                    .rename('NDVI')); //change new band name from 'nd' to 'NDVI'
+  }
+
+
+/* This function searches a Sentinel-2 TOA Collection according to date Range
+ and masks out cloud coverage, returning each image's NDVI
+ variable "Icol" is the name of image collection (string)
+ "bounds" is the shp file */
+
+function NDVIcol(startdate, enddate, bounds, BGmask) {
+  //Assign proper cloud and collection filter
+  var Icol = 'COPERNICUS/S2';
+
+  //Search Image Collection and select images.
+  var IC = ee.ImageCollection(Icol)
+    .filterBounds(bounds) //reduce search to bounds
+    .filterDate(startDate, endDate)//reduce search to date range
+    //Pre-filter to get less cloudy granules.
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+    //Apply Cloud Masking Function
+    .map(maskS2clouds)
+    //Apply supervised classification mask to remove bare ground pixels;
+    .map(BGmask);
+
+  //Add date in YYYYMMdd format to each image
+  IC = IC.map(addDate);
+
+  // compute NDVI
+  IC = IC
+    .map(addNDVI); //calculate NDVI for each image and add it to stack
+
+  //Number of Images in Collection
+  var Icount = IC.size();
+  // print('size of collection ', Icol, Icount);
+
+  //return a collection
+  return ee.ImageCollection(IC);
+}
+
+
+/* Sentinel-2 produces multiple images, resulting sometimes 4x more images than the actual size.
+  This is bad for any statistical analysis.  This function mosaics images by time. */
+function mosaicByTime(images) {
+  var TIME_FIELD = 'system:time_start';
+
+  var distinct = images.distinct([TIME_FIELD]);
+
+  var filter = ee.Filter.equals({ leftField: TIME_FIELD, rightField: TIME_FIELD });
+  var join = ee.Join.saveAll('matches');
+  var results = join.apply(distinct, images, filter);
+
+  // mosaic
+  results = results.map(function(i) {
+    var mosaic = ee.ImageCollection.fromImages(i.get('matches')).sort('date').mosaic();
+
+    return mosaic.copyProperties(i).set(TIME_FIELD, i.get(TIME_FIELD));
+  });
+
+  return ee.ImageCollection(results);
+}
+
+
+// This function creates time series charts for an image band for each region
+function timeSeriesChart(Icol, bandName, feature) {
+  var BandCol = ee.ImageCollection(Icol);
+
+  var chart = ui.Chart.image.series(BandCol, feature, ee.Reducer.mean(), scale_NDVI)
+
+  // // update series title asynchroneously (POLYGON_ID is a server-side object)
+
+  feature.get('POLYGON_ID').evaluate(function(fieldId) {
+    var options = {
+        title: ('Time Series of ' + fieldId),
+        hAxis: {
+          title: 'Time'},
+        vAxis: {
+          title: (bandName + ' value')},
+      }
+
+     chart.setOptions(options)
+  })
+
+  return chart;
+
+}
+
+
+// This function appends the NDVI timeseries to each polygon in the feature collection
+function getRegions(Icol, features) {
+  return Icol.map(function(image){
+    var medians = image.reduceRegions({
+      reducer: ee.Reducer.median(),
+      collection: features.select("POLYGON_ID"),
+      scale: scale_NDVI
+    }).filter(ee.Filter.notNull(["median"]))
+    .map(function(f) {
+      return f.set('date', image.date().format())
+    })
+    return medians
+  }).flatten()
+
+
+}
+
+
+
+//---- MAIN PROGRAM (Apply Functions) ----//
+// Search for images and return NDVI collection for each vegetation shapefile
+
+var Col_Cottonwood = NDVIcol(startDate, endDate, Cottonwood.geometry().bounds(), maskBGcottonwood);
+Col_Cottonwood = mosaicByTime(Col_Cottonwood);
+
+var Col_Willow = NDVIcol(startDate, endDate, Willow.geometry().bounds(), maskBGwillow);
+Col_Willow = mosaicByTime(Col_Willow);
+
+var Col_ValleyOak = NDVIcol(startDate, endDate, ValleyOak.geometry().bounds(), maskBGvalleyoak);
+Col_ValleyOak = mosaicByTime(Col_ValleyOak);
+
+
+
+/////////////////////////////////
+//------Export to Drive-------//
+/////////////////////////////////
+
+var ts_table_Cottonwood = getRegions(Col_Cottonwood.select('NDVI'), Cottonwood);
+Export.table.toDrive({
+      collection: ts_table_Cottonwood,
+      description: "Cottonwood_NDVI",
+      folder: 'GEE',
+      fileFormat: 'CSV'
+  });
+
+
+var ts_table_Willow = getRegions(Col_Willow.select('NDVI'), Willow);
+Export.table.toDrive({
+      collection: ts_table_Willow,
+      description: "Willow_NDVI",
+      folder: 'GEE',
+      fileFormat: 'CSV'
+  });
+
+
+var ts_table_ValleyOak = getRegions(Col_ValleyOak.select('NDVI'), ValleyOak);
+Export.table.toDrive({
+      collection: ts_table_ValleyOak,
+      description: "ValleyOak_NDVI",
+      folder: 'GEE',
+      fileFormat: 'CSV'
+  });
