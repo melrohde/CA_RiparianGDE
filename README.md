@@ -1,5 +1,5 @@
 # Detecting riparian vegetation reliance on groundwater using Sentinel-2 across California
-The scripts in this repo show how Google Earth Engine and R were utilized to evaluate riparian vegetation reliance on groundwater across California from 2015 to 2019.  The following instructions show a step-by-step process.  This repo is accompanies the paper, "Groundwater dependence of riparian woodlands and the disrupting effect of anthropogenically altered streamflow" by M.M. Rohde, J. Stella, M.B. Singer, and D. Roberts (currently in preparation).
+The scripts in this repo show how Google Earth Engine and R were utilized to evaluate riparian vegetation reliance on groundwater across California from 2015 to 2020.  The following instructions show a step-by-step process.  This repo is accompanies the paper, "Groundwater dependence of riparian woodlands and the disrupting effect of anthropogenically altered streamflow" by M.M. Rohde, J. Stella, M.B. Singer, and D. Roberts (currently in preparation).
 
 ## Table of Contents
 * [Introduction](#Introduction)
